@@ -4,7 +4,7 @@
 
 %% API functions
 
--export([start/2, start_link/2, get/2]).
+-export([start/2, start_link/2, get/2, close/1]).
 
 %% gen_server States
 
@@ -32,6 +32,12 @@ get(Connection, Token) ->
 					lager:debug("[get] start(Connection, Token) return: ~p; Connection: ~p; Token: ~p", [Result2, Connection, Token]),
 					Result2
 			end
+	end.
+
+close(Connection) ->
+	Client = self(),
+	case catch gproc:send({n, l, {?MODULE, Connection}}, {close, Client}) of
+		Result -> lager:debug("[close] Connection: ~p; Client: ~p; gproc:send(Key, {close, Client}) return: ~p", [Connection, Client, Result]), ok
 	end.
 
 %-------------------------------------------------------------------------------
@@ -110,6 +116,10 @@ handle_info(check_timestamp, #{clients := [], timestamp := Timestamp, connection
 handle_info(check_timestamp, #{connection := Connection, token := Token, clients := Clients} = State) ->
 	lager:debug("[handle_info] check_timestamp; Connection: ~p; Token: ~p; Clients: ~p", [Connection, Token, Clients]),
 	{noreply, State};
+
+handle_info({close, Client}, #{connection := Connection, clients := Clients} = State) ->
+	lager:debug("[handle_info] close; Connection: ~p; Client: ~p; Clients: ~p", [Connection, Client, Clients]),
+	{noreply, State#{clients => lists:delete(Client, Clients)}};
 
 handle_info(Info, State) ->
 	lager:error("[handle_info] Info: ~p", [Info]),
