@@ -10,12 +10,13 @@ init(Req, Opts) ->
 				{ok, Req, Opts};
 			{<<"GET">>, Token} ->
 				lager:debug("[init] GET; Token: ~p", [Token]),
-				nds_queue:get(Token),
+				Connection = cowboy_req:binding(connection, Req),
+				nds_connection:get(Connection, Token),
 				{cowboy_loop, Req, Opts};
 			{<<"POST">>, Token} ->
 				{ok, Event, Req_1} = cowboy_req:body(Req),
 				lager:debug("[init] POST; Token: ~p; Event: ~p", [Token, Event]),
-				nds_queue:post(Token, Event),
+				nds_queue:publish(Token, Event),
 				{ok, cowboy_req:reply(200, [], <<>>, Req_1), Opts};
 			_Request ->
 				lager:error("[init] nomatch request: ~p", [_Request]),

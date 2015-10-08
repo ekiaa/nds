@@ -4,7 +4,7 @@
 
 %% API functions
 
--export([start/1, start_link/1, get/1, post/2]).
+-export([start/1, start_link/1, subscribe/1, unsubscribe/1, publish/2]).
 
 %% gen_server States
 
@@ -18,41 +18,49 @@ start(Token) ->
 start_link(Token) ->
 	gen_server:start_link(?MODULE, {token, Token}, []).
 
-get(Token) ->
-	lager:debug("[get] Token: ~p", [Token]),
+subscribe(Token) ->
+	lager:debug("[subscribe] Token: ~p", [Token]),
 	case catch gproc:lookup_local_name({?MODULE, Token}) of
 		Pid when is_pid(Pid) ->
-			gen_server:cast(Pid, {get, self()});
+			gen_server:cast(Pid, {subscribe, self()});
 		Result1 ->
-			lager:debug("[get] gproc:lookup_local_name() return: ~p", [Result1]),
+			lager:debug("[subscribe] gproc:lookup_local_name() return: ~p", [Result1]),
 			case catch ?MODULE:start(Token) of
 				{ok, Pid} ->
-					gen_server:cast(Pid, {get, self()});
+					gen_server:cast(Pid, {subscribe, self()});
 				Result2 ->
-					lager:debug("[get] start(Token) return: ~p; Token: ~p", [Result2, Token]),
+					lager:debug("[subscribe] start(Token) return: ~p; Token: ~p", [Result2, Token]),
 					Result2
 			end
 	end.
 
-post(Token, Event) ->
-	lager:debug("[post] Token: ~p; Event: ~p", [Token, Event]),
+unsubscribe(Token) ->
+	Subscriber = self(),
+	lager:debug("[unsubscribe] Token: ~p; Subscriber: ~p", [Token, Subscriber]),
+	case catch gproc:send({n, l, {?MODULE, Token}}, {unsubscribe, Subscriber}) of
+		Result -> lager:debug("[unsubscribe] gproc:send(Key, Message) return: ~p", [Result]), ok
+	end.
+
+publish(Token, Event) ->
+	lager:debug("[publish] Token: ~p; Event: ~p", [Token, Event]),
 	case catch gproc:lookup_local_name({?MODULE, Token}) of
 		_Pid when is_pid(_Pid) ->
-			send_event(Token, Event);
+			publish_event(Token, Event);
 		Result1 ->
-			lager:debug("[post] gproc:lookup_local_name() return: ~p", [Result1]),
+			lager:debug("[publish] gproc:lookup_local_name() return: ~p", [Result1]),
 			case catch ?MODULE:start(Token) of
 				{ok, _Pid} ->
-					send_event(Token, Event);
+					publish_event(Token, Event);
 				Result2 ->
-					lager:debug("[post] start(Token) return: ~p; Token: ~p", [Result2, Token]),
+					lager:debug("[publish] Token: ~p; start(Token) return: ~p", [Token, Result2]),
 					Result2
 			end
 	end.
 
-send_event(Token, Event) ->
-	case catch gproc:bcast([node() | nodes()], {n, l, {?MODULE, Token}}, {post, Event}) of
-		Result -> lager:debug("[send_event] gproc:bcast() return: ~p", [Result]), ok
+publish_event(Token, Event) ->
+	Nodes = [node() | nodes()],
+	case catch gproc:bcast(Nodes, {n, l, {?MODULE, Token}}, {publish, Event}) of
+		Result -> lager:debug("[publish_event] Token: ~p; Event: ~p; gproc:bcast(Nodes) return: ~p; Nodes: ~p", [Token, Event, Result, Nodes]), ok
 	end.
 
 %-------------------------------------------------------------------------------
@@ -62,7 +70,7 @@ init({token, Token}) ->
 	case catch gproc:add_local_name({?MODULE, Token}) of
 		true ->
 			lager:debug("[init] started"),
-			{ok, #{token => Token, clients => [], events => queue:new()}};
+			{ok, #{token => Token, subscribers => []}};
 		Result ->
 			lager:debug("[init] gproc:add_local_name() return: ~p", [Result]),
 			{stop, already_registered}
@@ -81,16 +89,9 @@ handle_call(Request, From, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_cast({get, NewClient}, #{token := Token, clients := Clients, events := Events} = State) ->
-	case queue:out(Events) of
-		{empty, _} ->
-			lager:debug("[handle_call] get: no events; Client: ~p", [NewClient]),
-			{noreply, State#{clients => [NewClient | Clients]}};
-		{{value, FrontEvent}, RestEvents} ->
-			lager:debug("[handle_info] get: send front event to Clients; Token: ~p; Event: ~p; Clients: ~p", [Token, FrontEvent, [NewClient | Clients]]),
-			[Client ! {event, FrontEvent} || Client <- [NewClient | Clients]],
-			{noreply, State#{clients => [], events => RestEvents}}
-	end;
+handle_cast({subscribe, Subscriber}, #{token := Token, subscribers := Subscribers} = State) ->
+	lager:debug("[handle_cast] subscribe; Token: ~p; Subscriber: ~p; Subscribers: ~p", [Token, Subscriber, Subscribers]),
+	{noreply, State#{subscribers => [Subscriber | Subscribers]}};
 
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] Message: ~p", [Message]),
@@ -98,21 +99,18 @@ handle_cast(Message, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_info({post, Event}, #{token := Token, clients := [], events := Events} = State) ->
-	lager:debug("[handle_info] post: no clients; Token: ~p; Event: ~p", [Token, Event]),
-	{noreply, State#{events => queue:in(Event, Events)}};
+handle_info({unsubscribe, Subscriber}, #{token := Token, subscribers := Subscribers} = State) ->
+	lager:debug("[handle_info] unsubscribe; Token: ~p; Subscriber: ~p", [Token, Subscriber]),
+	{noreply, State#{subscribers => lists:delete(Subscriber, Subscribers)}};
 
-handle_info({post, Event}, #{token := Token, clients := Clients, events := Events} = State) ->
-	case queue:out(Events) of
-		{empty, _} ->
-			lager:debug("[handle_info] post; Token: ~p; Event: ~p; Clients: ~p", [Token, Event, Clients]),
-			[Client ! {event, Event} || Client <- Clients],
-			{noreply, State#{clients => []}};
-		{{value, FrontEvent}, RestEvents} ->
-			lager:debug("[handle_info] send front event to Clients; Token: ~p; Event: ~p; Clients: ~p", [Token, Event, Clients]),
-			[Client ! {event, FrontEvent} || Client <- Clients],
-			{noreply, State#{clients => [], events => queue:in(Event, RestEvents)}}
-	end;
+handle_info({publish, Event}, #{token := Token, subscribers := []} = State) ->
+	lager:debug("[handle_info] publish; Token: ~p; Subscribers: []; Event: ~p", [Token, Event]),
+	{noreply, State};
+
+handle_info({publish, Event}, #{token := Token, subscribers := Subscribers} = State) ->
+	lager:debug("[handle_info] publish; Token: ~p; Subscribers: ~p; Event: ~p", [Token, Subscribers, Event]),
+	[Subscriber ! {event, Event} || Subscriber <- Subscribers],
+	{noreply, State};
 
 handle_info(Info, State) ->
 	lager:error("[handle_info] Info: ~p", [Info]),
