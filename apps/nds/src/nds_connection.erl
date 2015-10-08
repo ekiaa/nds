@@ -4,7 +4,7 @@
 
 %% API functions
 
--export([start/2, start_link/2, get/2, close/1]).
+-export([start/1, start_link/1, get/2, close/2]).
 
 %% gen_server States
 
@@ -12,49 +12,30 @@
 
 %-------------------------------------------------------------------------------
 
-start(Connection, Token) ->
-	nds_connection_sup:start_child([Connection, Token]).
+start(Params) ->
+	nds_connection_sup:start_child([Params]).
 
-start_link(Connection, Token) ->
-	gen_server:start_link(?MODULE, {Connection, Token}, []).
+start_link(Params) ->
+	gen_server:start_link(?MODULE, Params, []).
 
-get(Connection, Token) ->
-	lager:debug("[get] Connection: ~p; Token: ~p", [Connection, Token]),
-	case catch gproc:lookup_local_name({?MODULE, Connection}) of
-		Pid when is_pid(Pid) ->
-			gen_server:cast(Pid, {get, self()});
-		Result1 ->
-			lager:debug("[get] gproc:lookup_local_name() return: ~p", [Result1]),
-			case catch ?MODULE:start(Connection, Token) of
-				{ok, Pid} ->
-					gen_server:cast(Pid, {get, self()});
-				Result2 ->
-					lager:debug("[get] start(Connection, Token) return: ~p; Connection: ~p; Token: ~p", [Result2, Connection, Token]),
-					Result2
-			end
-	end.
+get(ID, Token) ->
+	lager:debug("[get] ID: ~p; Token: ~p", [ID, Token]),
+	Connection = nds_connection_manager:get_connection(ID, Token),
+	gen_server:cast(Connection, {get, self()}).
 
-close(Connection) ->
-	Client = self(),
-	case catch gproc:send({n, l, {?MODULE, Connection}}, {close, Client}) of
-		Result -> lager:debug("[close] Connection: ~p; Client: ~p; gproc:send(Key, {close, Client}) return: ~p", [Connection, Client, Result]), ok
-	end.
+close(ID, Token) ->
+	lager:debug("[close] ID: ~p; Token: ~p", [ID, Token]),
+	Connection = nds_connection_manager:get_connection(ID, Token),
+	gen_server:cast(Connection, {close, self()}).
 
 %-------------------------------------------------------------------------------
 
-init({Connection, Token}) ->
-	lager:debug("[init] Token: ~p", [Token]),
-	case catch gproc:add_local_name({?MODULE, Connection}) of
-		true ->
-			lager:debug("[init] started"),
-			nds_queue:subscribe(Token),
-			Timestamp = now(),
-			timer:send_interval(30000, check_timestamp),
-			{ok, #{connection => Connection, token => Token, clients => [], events => queue:new(), timestamp => Timestamp}};
-		Result ->
-			lager:debug("[init] gproc:add_local_name() return: ~p", [Result]),
-			{stop, already_registered}
-	end;
+init({ID, Token}) ->
+	lager:debug("~p => init -> ~p", [ID, Token]),
+	nds_queue:subscribe(Token),
+	Timestamp = now(),
+	timer:send_interval(30000, check_timestamp),
+	{ok, #{id => ID, token => Token, clients => [], messages => queue:new(), timestamp => Timestamp}};
 
 init(Args) ->
 	lager:error("[init] Args: ~p", [Args]),
@@ -69,16 +50,20 @@ handle_call(Request, From, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_cast({get, NewClient}, #{token := Token, clients := Clients, events := Events} = State) ->
-	case queue:out(Events) of
+handle_cast({get, NewClient}, #{id := ID, token := Token, clients := Clients, messages := Messages} = State) ->
+	case queue:out(Messages) of
 		{empty, _} ->
-			lager:debug("[handle_call] get: no events; Client: ~p", [NewClient]),
+			lager:debug("~p => get from ~p -> no messages; Client: ~p", [ID, Token, NewClient]),
 			{noreply, State#{clients => [NewClient | Clients], timestamp => now()}};
-		{{value, FrontEvent}, RestEvents} ->
-			lager:debug("[handle_info] get: send front event to Clients; Token: ~p; Event: ~p; Clients: ~p", [Token, FrontEvent, [NewClient | Clients]]),
-			[Client ! {event, FrontEvent} || Client <- [NewClient | Clients]],
-			{noreply, State#{clients => [], events => RestEvents, timestamp => now()}}
+		{{value, FrontMessage}, RestMessages} ->
+			lager:debug("~p => get from ~p -> ~p; Clients: ~p", [ID, Token, FrontMessage, [NewClient | Clients]]),
+			[Client ! {event, FrontMessage} || Client <- [NewClient | Clients]],
+			{noreply, State#{clients => [], messages => RestMessages, timestamp => now()}}
 	end;
+
+handle_cast({close, Client}, #{id := ID, clients := Clients} = State) ->
+	lager:debug("~p => closed -> ~p", [ID, Client]),
+	{noreply, State#{clients => lists:delete(Client, Clients)}};
 
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] Message: ~p", [Message]),
@@ -86,40 +71,28 @@ handle_cast(Message, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_info({event, Event}, #{token := Token, clients := [], events := Events} = State) ->
-	lager:debug("[handle_info] post: no clients; Token: ~p; Event: ~p", [Token, Event]),
-	{noreply, State#{events => queue:in(Event, Events)}};
+handle_info({publish, Message}, #{id := ID, token := Token, clients := [], messages := Messages} = State) ->
+	lager:debug("~p => publish in ~p -> no clients; Message: ~p", [ID, Token, Message]),
+	{noreply, State#{messages => queue:in(Message, Messages)}};
 
-handle_info({event, Event}, #{token := Token, clients := Clients, events := Events} = State) ->
-	case queue:out(Events) of
-		{empty, _} ->
-			lager:debug("[handle_info] post; Token: ~p; Event: ~p; Clients: ~p", [Token, Event, Clients]),
-			[Client ! {event, Event} || Client <- Clients],
-			{noreply, State#{clients => [], timestamp => now()}};
-		{{value, FrontEvent}, RestEvents} ->
-			lager:debug("[handle_info] send front event to Clients; Token: ~p; Event: ~p; Clients: ~p", [Token, Event, Clients]),
-			[Client ! {event, FrontEvent} || Client <- Clients],
-			{noreply, State#{clients => [], events => queue:in(Event, RestEvents), timestamp => now()}}
-	end;
+handle_info({publish, Message}, #{id := ID, token := Token, clients := Clients} = State) ->
+	lager:debug("~p => publish in ~p -> ~p; Message: ~p", [ID, Token, Clients, Message]),
+	[Client ! {message, Message} || Client <- Clients],
+	{noreply, State#{clients => [], timestamp => now()}};
 
-handle_info(check_timestamp, #{clients := [], timestamp := Timestamp, connection := Connection, token := Token} = State) ->
+handle_info(check_timestamp, #{clients := [], timestamp := Timestamp, id := ID} = State) ->
 	case timer:now_diff(now(), Timestamp) of
 		Tdiff when Tdiff > 120000000 ->
-			lager:debug("[handle_info] check_timestamp: time is up; Connection: ~p; Token: ~p; Tdiff: ~p", [Connection, Token, Tdiff]),
-			nds_queue:unsubscribe(Token),
+			lager:debug("~p => check_timestamp -> become rotten; Tdiff: ~p", [ID, Tdiff]),
 			{stop, normal, State};
 		Tdiff ->
-			lager:debug("[handle_info] check_timestamp; Connection: ~p; Token: ~p; Tdiff: ~p", [Connection, Token, Tdiff]),
+			lager:debug("~p => check_timestamp -> fresh; Tdiff: ~p", [ID, Tdiff]),
 			{noreply, State}
 	end;
 
-handle_info(check_timestamp, #{connection := Connection, token := Token, clients := Clients} = State) ->
-	lager:debug("[handle_info] check_timestamp; Connection: ~p; Token: ~p; Clients: ~p", [Connection, Token, Clients]),
+handle_info(check_timestamp, #{id := ID, clients := Clients} = State) ->
+	lager:debug("~p => check_timestamp -> not empty; Clients: ~p", [ID, Clients]),
 	{noreply, State};
-
-handle_info({close, Client}, #{connection := Connection, clients := Clients} = State) ->
-	lager:debug("[handle_info] close; Connection: ~p; Client: ~p; Clients: ~p", [Connection, Client, Clients]),
-	{noreply, State#{clients => lists:delete(Client, Clients)}};
 
 handle_info(Info, State) ->
 	lager:error("[handle_info] Info: ~p", [Info]),

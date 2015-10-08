@@ -22,7 +22,7 @@ start(_StartType, _StartArgs) ->
 	Listeners = application:get_env(nds, listeners, 10),
 	Port = application:get_env(nds, port, 8080),
 	_Res = cowboy:start_http(nds_http_listener, Listeners, [{port, Port}], [{env, [{dispatch, Dispatch}]}]),
-	lager:debug("[start] cowboy:start_http() return: ~p", [_Res]),
+	lager:debug("[start] cowboy:start_http() return: ~p; Port: ~p", [_Res, Port]),
     'nds_sup':start_link().
 
 %%--------------------------------------------------------------------

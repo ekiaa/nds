@@ -4,7 +4,7 @@
 
 %% API functions
 
--export([start/1, start_link/1, subscribe/1, unsubscribe/1, publish/2]).
+-export([start/1, start_link/1, subscribe/1, publish/2]).
 
 %% gen_server States
 
@@ -20,61 +20,19 @@ start_link(Token) ->
 
 subscribe(Token) ->
 	lager:debug("[subscribe] Token: ~p", [Token]),
-	case catch gproc:lookup_local_name({?MODULE, Token}) of
-		Pid when is_pid(Pid) ->
-			gen_server:cast(Pid, {subscribe, self()});
-		Result1 ->
-			lager:debug("[subscribe] gproc:lookup_local_name() return: ~p", [Result1]),
-			case catch ?MODULE:start(Token) of
-				{ok, Pid} ->
-					gen_server:cast(Pid, {subscribe, self()});
-				Result2 ->
-					lager:debug("[subscribe] start(Token) return: ~p; Token: ~p", [Result2, Token]),
-					Result2
-			end
-	end.
+	Queue = nds_queue_manager:get_queue(Token),
+	gen_server:cast(Queue, {subscribe, self()}).
 
-unsubscribe(Token) ->
-	Subscriber = self(),
-	lager:debug("[unsubscribe] Token: ~p; Subscriber: ~p", [Token, Subscriber]),
-	case catch gproc:send({n, l, {?MODULE, Token}}, {unsubscribe, Subscriber}) of
-		Result -> lager:debug("[unsubscribe] gproc:send(Key, Message) return: ~p", [Result]), ok
-	end.
-
-publish(Token, Event) ->
-	lager:debug("[publish] Token: ~p; Event: ~p", [Token, Event]),
-	case catch gproc:lookup_local_name({?MODULE, Token}) of
-		_Pid when is_pid(_Pid) ->
-			publish_event(Token, Event);
-		Result1 ->
-			lager:debug("[publish] gproc:lookup_local_name() return: ~p", [Result1]),
-			case catch ?MODULE:start(Token) of
-				{ok, _Pid} ->
-					publish_event(Token, Event);
-				Result2 ->
-					lager:debug("[publish] Token: ~p; start(Token) return: ~p", [Token, Result2]),
-					Result2
-			end
-	end.
-
-publish_event(Token, Event) ->
-	Nodes = [node() | nodes()],
-	case catch gproc:bcast(Nodes, {n, l, {?MODULE, Token}}, {publish, Event}) of
-		Result -> lager:debug("[publish_event] Token: ~p; Event: ~p; gproc:bcast(Nodes) return: ~p; Nodes: ~p", [Token, Event, Result, Nodes]), ok
-	end.
+publish(Token, Message) ->
+	lager:debug("[publish] Token: ~p; Message: ~p", [Token, Message]),
+	Queue = nds_queue_manager:get_queue(Token),
+	gen_server:cast(Queue, {publish, Message}).
 
 %-------------------------------------------------------------------------------
 
 init({token, Token}) ->
-	lager:debug("[init] Token: ~p", [Token]),
-	case catch gproc:add_local_name({?MODULE, Token}) of
-		true ->
-			lager:debug("[init] started"),
-			{ok, #{token => Token, subscribers => []}};
-		Result ->
-			lager:debug("[init] gproc:add_local_name() return: ~p", [Result]),
-			{stop, already_registered}
-	end;
+	lager:debug("~p => init", [Token]),
+	{ok, #{token => Token, subscribers => []}};
 
 init(Args) ->
 	lager:error("[init] Args: ~p", [Args]),
@@ -90,8 +48,18 @@ handle_call(Request, From, State) ->
 %-------------------------------------------------------------------------------
 
 handle_cast({subscribe, Subscriber}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("[handle_cast] subscribe; Token: ~p; Subscriber: ~p; Subscribers: ~p", [Token, Subscriber, Subscribers]),
+	lager:debug("~p => subscribe -> ~p; Subscribers: ~p", [Token, Subscriber, Subscribers]),
+	monitor(process, Subscriber),
 	{noreply, State#{subscribers => [Subscriber | Subscribers]}};
+
+handle_cast({publish, Message}, #{token := Token, subscribers := []} = State) ->
+	lager:debug("~p => publish -> no subscribers; Message: ~p", [Token, Message]),
+	{noreply, State};
+
+handle_cast({publish, Message}, #{token := Token, subscribers := Subscribers} = State) ->
+	lager:debug("~p => publish -> ~p; Message: ~p", [Token, Subscribers, Message]),
+	[Subscriber ! {publish, Message} || Subscriber <- Subscribers],
+	{noreply, State};
 
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] Message: ~p", [Message]),
@@ -99,18 +67,9 @@ handle_cast(Message, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_info({unsubscribe, Subscriber}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("[handle_info] unsubscribe; Token: ~p; Subscriber: ~p", [Token, Subscriber]),
+handle_info({'DOWN', _, _, Subscriber, Reason}, #{token := Token, subscribers := Subscribers} = State) ->
+	lager:debug("~p => down -> ~p; Reason: ~p", [Token, Subscriber, Reason]),
 	{noreply, State#{subscribers => lists:delete(Subscriber, Subscribers)}};
-
-handle_info({publish, Event}, #{token := Token, subscribers := []} = State) ->
-	lager:debug("[handle_info] publish; Token: ~p; Subscribers: []; Event: ~p", [Token, Event]),
-	{noreply, State};
-
-handle_info({publish, Event}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("[handle_info] publish; Token: ~p; Subscribers: ~p; Event: ~p", [Token, Subscribers, Event]),
-	[Subscriber ! {event, Event} || Subscriber <- Subscribers],
-	{noreply, State};
 
 handle_info(Info, State) ->
 	lager:error("[handle_info] Info: ~p", [Info]),
