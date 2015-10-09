@@ -19,19 +19,19 @@ start_link(Token) ->
 	gen_server:start_link(?MODULE, {token, Token}, []).
 
 subscribe(Token) ->
-	lager:debug("[subscribe] Token: ~p", [Token]),
+	% lager:debug("[subscribe] Token: ~p", [Token]),
 	Queue = nds_queue_manager:get_queue(Token),
 	gen_server:cast(Queue, {subscribe, self()}).
 
 publish(Token, Message) ->
-	lager:debug("[publish] Token: ~p; Message: ~p", [Token, Message]),
+	% lager:debug("[publish] Token: ~p; Message: ~p", [Token, Message]),
 	Queue = nds_queue_manager:get_queue(Token),
 	gen_server:cast(Queue, {publish, Message}).
 
 %-------------------------------------------------------------------------------
 
 init({token, Token}) ->
-	lager:debug("~p => init", [Token]),
+	% lager:debug("~p => init", [Token]),
 	{ok, #{token => Token, subscribers => []}};
 
 init(Args) ->
@@ -41,23 +41,23 @@ init(Args) ->
 %-------------------------------------------------------------------------------
 
 handle_call(Request, From, State) ->
-	lager:error("[handle_call] From: ~p; Request: ~p", [From, Request]),
+	% lager:error("[handle_call] From: ~p; Request: ~p", [From, Request]),
 	Error = {error, {?MODULE, ?LINE, {From, Request}}},
 	{stop, Error, Error, State}.
 
 %-------------------------------------------------------------------------------
 
 handle_cast({subscribe, Subscriber}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("~p => subscribe -> ~p; Subscribers: ~p", [Token, Subscriber, Subscribers]),
+	% lager:debug("~p => subscribe -> ~p; Subscribers: ~p", [Token, Subscriber, Subscribers]),
 	monitor(process, Subscriber),
 	{noreply, State#{subscribers => [Subscriber | Subscribers]}};
 
 handle_cast({publish, Message}, #{token := Token, subscribers := []} = State) ->
-	lager:debug("~p => publish -> no subscribers; Message: ~p", [Token, Message]),
+	% lager:debug("~p => publish -> no subscribers; Message: ~p", [Token, Message]),
 	{noreply, State};
 
 handle_cast({publish, Message}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("~p => publish -> ~p; Message: ~p", [Token, Subscribers, Message]),
+	% lager:debug("~p => publish -> ~p; Message: ~p", [Token, Subscribers, Message]),
 	[Subscriber ! {publish, Message} || Subscriber <- Subscribers],
 	{noreply, State};
 
@@ -68,7 +68,7 @@ handle_cast(Message, State) ->
 %-------------------------------------------------------------------------------
 
 handle_info({'DOWN', _, _, Subscriber, Reason}, #{token := Token, subscribers := Subscribers} = State) ->
-	lager:debug("~p => down -> ~p; Reason: ~p", [Token, Subscriber, Reason]),
+	% lager:debug("~p => down -> ~p; Reason: ~p", [Token, Subscriber, Reason]),
 	{noreply, State#{subscribers => lists:delete(Subscriber, Subscribers)}};
 
 handle_info(Info, State) ->

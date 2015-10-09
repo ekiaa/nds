@@ -61,10 +61,10 @@ handle_cast(Message, State) ->
 handle_info({'DOWN', _, _, Connection, Reason}, #{keys := Keys} = State) ->
 	case maps:get(Connection, Keys, undefined) of
 		undefined ->
-			lager:debug("[handle_info] not matched Process ~p down with ~p", [Connection, Reason]),
+			% lager:debug("[handle_info] not matched Process ~p down with ~p", [Connection, Reason]),
 			{noreply, State};
 		Key ->
-			lager:debug("[handle_info] Connection ~p down with ~p", [Connection, Reason]),
+			% lager:debug("[handle_info] Connection ~p down with ~p", [Connection, Reason]),
 			ets:delete(?TABLE, Key),
 			{noreply, State#{ids => maps:remove(Connection, Keys)}}
 	end;
