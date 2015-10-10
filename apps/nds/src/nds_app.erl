@@ -16,10 +16,10 @@
 
 start(_StartType, _StartArgs) ->
 	Dispatch  = cowboy_router:compile([{'_', [
-		{"/:token/:connection", nds_http_handler, []},
-		{"/:token", nds_http_handler, []}
+		{"/:queue_name/:subscriber_name", nds_http_handler, []},
+		{"/:queue_name", nds_http_handler, []}
 	]}]),
-	Listeners = application:get_env(nds, listeners, 10),
+	Listeners = application:get_env(nds, listeners, 1000),
 	Port = application:get_env(nds, port, 8080),
 	_Res = cowboy:start_http(nds_http_listener, Listeners, [{port, Port}], [{env, [{dispatch, Dispatch}]}]),
 	lager:debug("[start] cowboy:start_http() return: ~p; Port: ~p", [_Res, Port]),

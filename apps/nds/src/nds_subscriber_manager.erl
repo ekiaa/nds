@@ -1,49 +1,41 @@
--module(nds_connection_manager).
+-module(nds_subscriber_manager).
 
 -behaviour(gen_server).
 
 %% API functions
 
--export([start_link/0, get_connection/2]).
+-export([start_link/0, send/3]).
 
 %% gen_server callbacks
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(TABLE, nds_connection_db).
+-define(TABLE, ?MODULE).
 
 %-------------------------------------------------------------------------------
 
 start_link() ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-get_connection(ID, Token) ->
-	Key = {ID, Token},
-	case ets:lookup(?TABLE, Key) of
+send(SubscriberName, QueueName, Message) ->
+	case ets:lookup(?TABLE, {SubscriberName, QueueName}) of
 		[] ->
-			gen_server:call(?MODULE, {create_connection, Key});
-		[{Key, Connection}] ->
-			Connection
+			gen_server:cast(?MODULE, {create_subscriber_and_send, SubscriberName, QueueName, Message});
+		[{_, Subscriber}] ->
+			Subscriber ! Message, ok
 	end.
 
 %-------------------------------------------------------------------------------
 
 init([]) ->
 	ets:new(?TABLE, [named_table, protected, {read_concurrency, true}]),
-	lager:debug("[init] ets table ~p created", [?TABLE]),
-	{ok, #{keys => #{}}};
+	{ok, #{}};
 
 init(Args) ->
 	lager:error("[init] Args: ~p", [Args]),
 	{stop, {error, {?MODULE, ?LINE, Args}}}.
 
 %-------------------------------------------------------------------------------
-
-handle_call({create_connection, Key}, _, #{keys := Keys} = State) ->
-	{ok, Connection} = nds_connection:start(Key),
-	ets:insert(?TABLE, {Key, Connection}),
-	monitor(process, Connection),
-	{reply, Connection, State#{keys => maps:put(Connection, Key, Keys)}};
 
 handle_call(Request, From, State) ->
 	lager:error("[handle_call] From: ~p; Request: ~p", [From, Request]),
@@ -52,21 +44,39 @@ handle_call(Request, From, State) ->
 
 %-------------------------------------------------------------------------------
 
+handle_cast({create_subscriber_and_send, SubscriberName, QueueName, Message}, State) ->
+	case ets:lookup(?TABLE, {SubscriberName, QueueName}) of
+		[] ->
+			case nds_subscriber:start(SubscriberName, QueueName) of
+				{ok, Subscriber} ->
+					erlang:monitor(process, Subscriber),
+					ets:insert(?TABLE, [{{SubscriberName, QueueName}, Subscriber}, {Subscriber, {SubscriberName, QueueName}}]),
+					Subscriber ! Message,
+					{noreply, State};
+				Result ->
+					lager:error("[handle_call] Subscriber start error: ~p; SubscriberName: ~p; QueueName: ~p; Message: ~p", [Result, SubscriberName, QueueName, Message]),
+					{noreply, State}
+			end;
+		[{_, Subscriber}] ->
+			Subscriber ! Message,
+			{noreply, State}
+	end;
+
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] Message: ~p", [Message]),
 	{stop, {error, {?MODULE, ?LINE, Message}}, State}.
 
 %-------------------------------------------------------------------------------
 
-handle_info({'DOWN', _, _, Connection, Reason}, #{keys := Keys} = State) ->
-	case maps:get(Connection, Keys, undefined) of
-		undefined ->
-			% lager:debug("[handle_info] not matched Process ~p down with ~p", [Connection, Reason]),
+handle_info({'DOWN', _, _, Subscriber, Reason}, State) ->
+	case ets:lookup(?TABLE, Subscriber) of
+		[] ->
+			lager:error("[handle_info] 'DOWN' not matched Subscriber: ~p; Reason: ~p", [Subscriber, Reason]),
 			{noreply, State};
-		Key ->
-			% lager:debug("[handle_info] Connection ~p down with ~p", [Connection, Reason]),
+		[{_, Key}] ->
 			ets:delete(?TABLE, Key),
-			{noreply, State#{ids => maps:remove(Connection, Keys)}}
+			ets:delete(?TABLE, Subscriber),
+			{noreply, State}
 	end;
 
 handle_info(Info, State) ->

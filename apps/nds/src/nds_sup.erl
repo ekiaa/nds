@@ -30,10 +30,10 @@ start_link() ->
 init([]) ->
 	{ok, {{one_for_all, 0, 1}, [
 		{nds_manager, {nds_manager, start_link, []}, permanent, 5000, worker, [nds_manager]},
-		{nds_connection_sup, {nds_connection_sup, start_link, []}, permanent, infinity, supervisor, [nds_connection_sup]},
-		{nds_connection_manager, {nds_connection_manager, start_link, []}, permanent, 5000, worker, [nds_connection_manager]},
-		{nds_queue_sup, {nds_queue_sup, start_link, []}, permanent, infinity, supervisor, [nds_queue_sup]},
-		{nds_queue_manager, {nds_queue_manager, start_link, []}, permanent, 5000, worker, [nds_queue_manager]}
+		{nds_subscriber_sup, {nds_subscriber_sup, start_link, []}, permanent, infinity, supervisor, [nds_subscriber_sup]},
+		{nds_subscriber_manager, {nds_subscriber_manager, start_link, []}, permanent, 5000, worker, [nds_subscriber_manager]},
+		{nds_publisher_sup, {nds_publisher_sup, start_link, []}, permanent, infinity, supervisor, [nds_publisher_sup]},
+		{nds_publisher_manager, {nds_publisher_manager, start_link, []}, permanent, 5000, worker, [nds_publisher_manager]}
 	]}}.
 
 %%====================================================================

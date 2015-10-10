@@ -1,48 +1,41 @@
--module(nds_queue_manager).
+-module(nds_publisher_manager).
 
 -behaviour(gen_server).
 
 %% API functions
 
--export([start_link/0, get_queue/1]).
+-export([start_link/0, send/2]).
 
 %% gen_server callbacks
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(TABLE, nds_queue_db).
+-define(TABLE, ?MODULE).
 
 %-------------------------------------------------------------------------------
 
 start_link() ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-get_queue(Token) ->
-	case ets:lookup(?TABLE, Token) of
+send(QueueName, Message) ->
+	case ets:lookup(?TABLE, QueueName) of
 		[] ->
-			gen_server:call(?MODULE, {create_queue, Token});
-		[{Token, Queue}] ->
-			Queue
+			gen_server:cast(?MODULE, {create_publisher_and_send, QueueName, Message});
+		[{_, Publisher}] ->
+			Publisher ! Message, ok
 	end.
 
 %-------------------------------------------------------------------------------
 
 init([]) ->
 	ets:new(?TABLE, [named_table, protected, {read_concurrency, true}]),
-	lager:debug("[init] ets table ~p created", [?TABLE]),
-	{ok, #{tokens => #{}}};
+	{ok, #{}};
 
 init(Args) ->
 	lager:error("[init] Args: ~p", [Args]),
 	{stop, {error, {?MODULE, ?LINE, Args}}}.
 
 %-------------------------------------------------------------------------------
-
-handle_call({create_queue, Token}, _, #{tokens := Tokens} = State) ->
-	{ok, Queue} = nds_queue:start(Token),
-	ets:insert(?TABLE, {Token, Queue}),
-	monitor(process, Queue),
-	{reply, Queue, State#{tokens => maps:put(Queue, Token, Tokens)}};
 
 handle_call(Request, From, State) ->
 	lager:error("[handle_call] From: ~p; Request: ~p", [From, Request]),
@@ -51,21 +44,39 @@ handle_call(Request, From, State) ->
 
 %-------------------------------------------------------------------------------
 
+handle_cast({create_publisher_and_send, QueueName, Message}, State) ->
+	case ets:lookup(?TABLE, QueueName) of
+		[] ->
+			case nds_publisher:start(QueueName) of
+				{ok, Publisher} ->
+					ets:insert(?TABLE, [{QueueName, Publisher}, {Publisher, QueueName}]),
+					erlang:monitor(process, Publisher),
+					Publisher ! Message,
+					{noreply, State};
+				Result ->
+					lager:error("[handle_cast] Publisher start error: ~p; QueueName: ~p; Message: ~p", [Result, QueueName, Message]),
+					{noreply, State}
+			end;
+		[{_, Publisher}] ->
+			Publisher ! Message,
+			{noreply, State}
+	end;
+
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] Message: ~p", [Message]),
 	{stop, {error, {?MODULE, ?LINE, Message}}, State}.
 
 %-------------------------------------------------------------------------------
 
-handle_info({'DOWN', _, _, Queue, Reason}, #{tokens := Tokens} = State) ->
-	case maps:get(Queue, Tokens, undefined) of
-		undefined ->
-			% lager:debug("[handle_info] not matched Process ~p down with ~p", [Queue, Reason]),
+handle_info({'DOWN', _, _, Publisher, Reason}, State) ->
+	case ets:lookup(?TABLE, Publisher) of
+		[] ->
+			lager:error("[handle_info] 'DOWN' not matched Publisher: ~p; Reason: ~p", [Publisher, Reason]),
 			{noreply, State};
-		Token ->
-			% lager:debug("[handle_info] Queue ~p down with ~p", [Queue, Reason]),
-			ets:delete(?TABLE, Token),
-			{noreply, State#{tokens => maps:remove(Queue, Tokens)}}
+		[{_, QueueName}] ->
+			ets:delete(?TABLE, QueueName),
+			ets:delete(?TABLE, Publisher),
+			{noreply, State}
 	end;
 
 handle_info(Info, State) ->

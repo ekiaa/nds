@@ -1,4 +1,4 @@
--module(nds_connection_sup).
+-module(nds_subscriber_sup).
 
 -behaviour(supervisor).
 
@@ -15,8 +15,8 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_child(Params) ->
-	supervisor:start_child(?MODULE, Params).
+start_child(Args) ->
+	supervisor:start_child(?MODULE, Args).
 
 %% ===================================================================
 %% Supervisor callbacks
@@ -24,6 +24,6 @@ start_child(Params) ->
 
 init([]) ->
     {ok, {{simple_one_for_one, 1000, 1}, [
-    	{nds_connection, {nds_connection, start_link, []}, temporary, 5000, worker, [nds_connection]}
+    	{nds_subscriber, {nds_subscriber, start_link, []}, temporary, brutal_kill, worker, [nds_subscriber]}
     ]}}.
 
