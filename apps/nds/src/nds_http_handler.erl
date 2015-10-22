@@ -32,7 +32,8 @@ get_subscriber_name(Req, State) ->
 get_message(Req, #{subscriber_name := SubscriberName, queue_name := QueueName} = State) ->
 	nds_subscriber:get(SubscriberName, QueueName),
 	Timeout = application:get_env(nds, timeout, 30000),
-	{loop, Req, State#{reply_message => false}, Timeout, hibernate}.
+	{loop, Req, State#{reply_message => false}}.
+	% {loop, Req, State#{reply_message => false}, Timeout, hibernate}.
 
 get_body({ok, Message, Req}, State) ->
 	post_message(Message, Req, State);

@@ -10,6 +10,8 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
+-define(MSG_QUEUE_LIMIT, 10).
+
 %-------------------------------------------------------------------------------
 
 start(SubscriberName, QueueName) ->
@@ -33,7 +35,8 @@ init(#{queue_name := QueueName} = State) ->
 	nds_manager:increment(),
 	nds_publisher:subscribe(QueueName),
 	timer:send_interval(30000, check_timestamp),
-	{ok, State#{clients => [], messages => queue:new(), timestamp => erlang:now()}};
+	QueueLimit = application:get_env(nds, queue_limit, ?MSG_QUEUE_LIMIT),
+	{ok, State#{clients => [], messages => queue:new(), timestamp => erlang:now(), queue_limit => QueueLimit}};
 
 init(Args) ->
 	lager:error("[init] Args: ~p", [Args]),
@@ -48,10 +51,18 @@ handle_call(Request, From, State) ->
 
 %-------------------------------------------------------------------------------
 
-handle_cast({publish, Message}, #{clients := [], messages := Messages} = State) ->
-	{noreply, State#{messages => queue:in(Message, Messages)}};
+handle_cast({publish, Message}, #{clients := [], messages := Messages, queue_limit := QueueLimit} = State) ->
+	case queue:len(Messages) of
+		QueueLimit ->
+			% lager:warning("[handle_cast] publish Message; Messages len >= ~p", [?MSG_QUEUE_LIMIT]),
+			{{value, FrontMessage}, RestMessages} = queue:out(Messages),
+			{noreply, State#{messages => queue:in(Message, RestMessages)}};
+		_ ->
+			{noreply, State#{messages => queue:in(Message, Messages)}}
+	end;
 
-handle_cast({publish, Message}, #{clients := Clients} = State) ->
+handle_cast({publish, Message}, #{clients := Clients, messages := Messages} = State) ->
+	% queue:is_empty(Messages) orelse lager:warning("[handle_call] publish Message; Messages not empty!!!"),	
 	[Client ! {message, Message} || Client <- Clients],
 	{noreply, State#{clients => [], timestamp => erlang:now()}};
 
