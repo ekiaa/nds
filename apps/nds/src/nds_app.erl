@@ -19,9 +19,13 @@ start(_StartType, _StartArgs) ->
 		{"/:queue_name/:subscriber_name", nds_http_handler, []},
 		{"/:queue_name", nds_http_handler, []}
 	]}]),
-	Listeners = application:get_env(nds, listeners, 1000),
+	Listeners = application:get_env(nds, listeners, 100),
 	Port = application:get_env(nds, port, 8080),
-	_Res = cowboy:start_http(nds_http_listener, Listeners, [{port, Port}], [{env, [{dispatch, Dispatch}]}]),
+	Options = [
+		{port, Port},
+		{max_connections, infinity}
+	],
+	_Res = cowboy:start_http(nds_http_listener, Listeners, Options, [{env, [{dispatch, Dispatch}]}]),
 	lager:debug("[start] cowboy:start_http() return: ~p; Port: ~p", [_Res, Port]),
     'nds_sup':start_link().
 
